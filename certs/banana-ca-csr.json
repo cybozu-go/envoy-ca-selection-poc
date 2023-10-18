@@ -1,0 +1,19 @@
+{
+    "CN": "banana.example.com",
+    "hosts": [
+        "banana.example.com",
+        "127.0.0.1"
+    ],
+    "key": {
+        "algo": "ecdsa",
+        "size": 256
+    },
+    "names": [
+        {
+            "C": "US",
+            "ST": "CA",
+            "L": "San Francisco"
+        }
+    ]
+}
+

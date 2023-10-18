@@ -1,0 +1,10 @@
+#!/bin/sh
+
+SERVER=$1
+CERTDIR=certs/${SERVER}
+
+curl --resolve ${SERVER}:10000:127.0.0.1 \
+    --cert ${CERTDIR}/client.pem \
+    --key ${CERTDIR}/client-key.pem \
+    --cacert ${CERTDIR}/ca.pem \
+    -v https://${SERVER}:10000

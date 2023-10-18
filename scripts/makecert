@@ -1,0 +1,35 @@
+#!/bin/sh
+
+CERTDIR=certs
+CONFIG=${CERTDIR}/ca-config.json
+
+# create root CA
+cfssl gencert -initca ${CERTDIR}/root-ca-csr.json | cfssljson -bare ${CERTDIR}/root-ca -
+
+# issue server cert from root CA
+cfssl gencert -ca ${CERTDIR}/root-ca.pem -ca-key ${CERTDIR}/root-ca-key.pem \
+    -config ${CONFIG} -profile server ${CERTDIR}/server-csr.json \
+    | cfssljson -bare ${CERTDIR}/server -
+
+# create client's CAs from root CA
+CLIENT1=apple.example.com
+CLIENT2=banana.example.com
+mkdir -p ${CERTDIR}/${CLIENT1} ${CERTDIR}/${CLIENT2}
+cfssl gencert -ca ${CERTDIR}/root-ca.pem -ca-key ${CERTDIR}/root-ca-key.pem \
+    -config ${CONFIG} -profile ca ${CERTDIR}/apple-ca-csr.json \
+    | cfssljson -bare "${CERTDIR}/${CLIENT1}/ca" -
+cfssl gencert -ca ${CERTDIR}/root-ca.pem -ca-key ${CERTDIR}/root-ca-key.pem \
+    -config ${CONFIG} -profile ca ${CERTDIR}/banana-ca-csr.json \
+    | cfssljson -bare "${CERTDIR}/${CLIENT2}/ca" -
+
+# issue client cert from client's CA
+cfssl gencert -ca ${CERTDIR}/${CLIENT1}/ca.pem -ca-key ${CERTDIR}/${CLIENT1}/ca-key.pem \
+    -config ${CONFIG} -profile client ${CERTDIR}/apple-client-csr.json \
+    | cfssljson -bare "${CERTDIR}/${CLIENT1}/client" -
+cfssl gencert -ca ${CERTDIR}/${CLIENT2}/ca.pem -ca-key ${CERTDIR}/${CLIENT2}/ca-key.pem \
+    -config ${CONFIG} -profile client ${CERTDIR}/banana-client-csr.json \
+    | cfssljson -bare "${CERTDIR}/${CLIENT2}/client" -
+
+# merge client's CA and root CA
+cat ${CERTDIR}/root-ca.pem >> ${CERTDIR}/${CLIENT1}/ca.pem
+cat ${CERTDIR}/root-ca.pem >> ${CERTDIR}/${CLIENT2}/ca.pem

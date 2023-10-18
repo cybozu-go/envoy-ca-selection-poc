@@ -19,17 +19,22 @@ import (
 
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	router "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/router/v3"
+	tls_inspectorv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/listener/tls_inspector/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/resource/v3"
+	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
 )
 
 const (
@@ -37,8 +42,8 @@ const (
 	RouteName    = "local_route"
 	ListenerName = "listener_0"
 	ListenerPort = 10000
-	UpstreamHost = "www.envoyproxy.io"
-	UpstreamPort = 80
+	UpstreamHost = "localhost"
+	UpstreamPort = 8080
 )
 
 func makeCluster(clusterName string) *cluster.Cluster {
@@ -97,6 +102,7 @@ func makeRoute(routeName string, clusterName string) *route.RouteConfiguration {
 						HostRewriteSpecifier: &route.RouteAction_HostRewriteLiteral{
 							HostRewriteLiteral: UpstreamHost,
 						},
+						AppendXForwardedHost: true, // Append for routing by SNI
 					},
 				},
 			}},
@@ -104,12 +110,60 @@ func makeRoute(routeName string, clusterName string) *route.RouteConfiguration {
 	}
 }
 
-func makeHTTPListener(listenerName string, route string) *listener.Listener {
+func makeDownstreamTLSContext(
+	serverKeyPair *ServerKeyPair,
+	clientValContext *ClientCertValidationContext,
+) *anypb.Any {
+	// TLS configuration
+	context := &tlsv3.DownstreamTlsContext{
+		RequireClientCertificate: wrapperspb.Bool(true), // Require Client Certificate for mTLS
+		CommonTlsContext: &tlsv3.CommonTlsContext{
+			TlsCertificates: []*tlsv3.TlsCertificate{
+				{
+					CertificateChain: &corev3.DataSource{
+						Specifier: &corev3.DataSource_InlineBytes{
+							InlineBytes: serverKeyPair.Cert,
+						},
+					},
+					PrivateKey: &corev3.DataSource{
+						Specifier: &corev3.DataSource_InlineBytes{
+							InlineBytes: serverKeyPair.Key,
+						},
+					},
+				},
+			},
+			ValidationContextType: &tlsv3.CommonTlsContext_ValidationContext{
+				ValidationContext: &tlsv3.CertificateValidationContext{
+					TrustedCa: &corev3.DataSource{
+						Specifier: &corev3.DataSource_InlineBytes{
+							InlineBytes: clientValContext.CACert,
+						},
+					},
+				},
+			},
+		},
+	}
+	pbst, err := anypb.New(context)
+	if err != nil {
+		panic(err)
+	}
+	return pbst
+}
+
+func makeFilterChain(
+	route string,
+	serverKeyPair *ServerKeyPair,
+	clientValContext *ClientCertValidationContext,
+) *listener.FilterChain {
 	routerConfig, _ := anypb.New(&router.Router{})
 	// HTTP filter configuration
 	manager := &hcm.HttpConnectionManager{
-		CodecType:  hcm.HttpConnectionManager_AUTO,
-		StatPrefix: "http",
+		CodecType:                hcm.HttpConnectionManager_AUTO,
+		StatPrefix:               "http",
+		ForwardClientCertDetails: hcm.HttpConnectionManager_ForwardClientCertDetails(2),
+		SetCurrentClientCertDetails: &hcm.HttpConnectionManager_SetCurrentClientCertDetails{
+			Uri: true,
+		},
 		RouteSpecifier: &hcm.HttpConnectionManager_Rds{
 			Rds: &hcm.Rds{
 				ConfigSource:    makeConfigSource(),
@@ -117,11 +171,61 @@ func makeHTTPListener(listenerName string, route string) *listener.Listener {
 			},
 		},
 		HttpFilters: []*hcm.HttpFilter{{
-			Name:       "http-router",
+			Name:       wellknown.Router,
 			ConfigType: &hcm.HttpFilter_TypedConfig{TypedConfig: routerConfig},
 		}},
 	}
 	pbst, err := anypb.New(manager)
+	if err != nil {
+		panic(err)
+	}
+
+	return &listener.FilterChain{
+		FilterChainMatch: &listener.FilterChainMatch{
+			ServerNames: []string{clientValContext.ServerName},
+		},
+		Filters: []*listener.Filter{
+			{
+				Name: wellknown.HTTPConnectionManager,
+				ConfigType: &listener.Filter_TypedConfig{
+					TypedConfig: pbst,
+				},
+			},
+		},
+		TransportSocket: &corev3.TransportSocket{
+			Name: wellknown.TransportSocketTLS,
+			ConfigType: &core.TransportSocket_TypedConfig{
+				TypedConfig: makeDownstreamTLSContext(serverKeyPair, clientValContext),
+			},
+		},
+	}
+}
+
+func makeFilterChainArray(
+	route string,
+	serverKeyPair *ServerKeyPair,
+	clientValContext []*ClientCertValidationContext,
+) []*listener.FilterChain {
+	var chainArray []*listener.FilterChain
+	for _, certGroup := range clientValContext {
+		chainArray = append(
+			chainArray,
+			makeFilterChain(route, serverKeyPair, certGroup),
+		)
+	}
+	return chainArray
+}
+
+func makeHTTPListener(
+	listenerName string,
+	route string,
+	serverKeyPair *ServerKeyPair,
+	clientValContext []*ClientCertValidationContext,
+) *listener.Listener {
+	inspector := &tls_inspectorv3.TlsInspector{
+		EnableJa3Fingerprinting: wrapperspb.Bool(false),
+	}
+	pbst3, err := anypb.New(inspector)
 	if err != nil {
 		panic(err)
 	}
@@ -139,14 +243,15 @@ func makeHTTPListener(listenerName string, route string) *listener.Listener {
 				},
 			},
 		},
-		FilterChains: []*listener.FilterChain{{
-			Filters: []*listener.Filter{{
-				Name: "http-connection-manager",
-				ConfigType: &listener.Filter_TypedConfig{
-					TypedConfig: pbst,
+		ListenerFilters: []*listener.ListenerFilter{
+			{
+				Name: wellknown.TLSInspector,
+				ConfigType: &listener.ListenerFilter_TypedConfig{
+					TypedConfig: pbst3,
 				},
-			}},
-		}},
+			},
+		},
+		FilterChains: makeFilterChainArray(route, serverKeyPair, clientValContext),
 	}
 }
 
@@ -171,9 +276,14 @@ func makeConfigSource() *core.ConfigSource {
 func GenerateSnapshot() *cache.Snapshot {
 	snap, _ := cache.NewSnapshot("1",
 		map[resource.Type][]types.Resource{
-			resource.ClusterType:  {makeCluster(ClusterName)},
-			resource.RouteType:    {makeRoute(RouteName, ClusterName)},
-			resource.ListenerType: {makeHTTPListener(ListenerName, RouteName)},
+			resource.ClusterType: {makeCluster(ClusterName)},
+			resource.RouteType:   {makeRoute(RouteName, ClusterName)},
+			resource.ListenerType: {makeHTTPListener(
+				ListenerName,
+				RouteName,
+				GetServerKeyPair(),
+				GetClientCertValidationContexts(),
+			)},
 		},
 	)
 	return snap

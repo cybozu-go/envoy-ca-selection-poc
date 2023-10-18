@@ -19,7 +19,7 @@ import (
 	"flag"
 	"os"
 
-	"github.com/envoyproxy/go-control-plane/internal/example"
+	example "github.com/arailly/envoy-ca-selection/control-plane"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/server/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/test/v3"

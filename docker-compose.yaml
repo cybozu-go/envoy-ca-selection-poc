@@ -1,0 +1,26 @@
+version: '2'
+
+services:
+  front-envoy:
+    image: envoyproxy/envoy:v1.27.0
+    depends_on:
+      - upstream-service
+    ports:
+      - "10000:443"
+      - "19000:19000"
+    volumes:
+      - "./config/envoy/envoy.yaml:/etc/envoy/envoy.yaml"
+    network_mode: host
+
+  control-plane:
+    build: ./control-plane
+    ports:
+      - "18000:18000"
+      - "18090:18090"
+    volumes:
+      - "./certs:/app/certs"
+
+  upstream-service:
+    build: ./upstream
+    ports: 
+      - "8080:8080"
