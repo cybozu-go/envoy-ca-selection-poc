@@ -204,10 +204,10 @@ func makeFilterChain(
 func makeFilterChainArray(
 	route string,
 	serverKeyPair *ServerKeyPair,
-	clientValContext []*ClientCertValidationContext,
+	clientValContexts []*ClientCertValidationContext,
 ) []*listener.FilterChain {
 	var chainArray []*listener.FilterChain
-	for _, certGroup := range clientValContext {
+	for _, certGroup := range clientValContexts {
 		chainArray = append(
 			chainArray,
 			makeFilterChain(route, serverKeyPair, certGroup),
@@ -220,7 +220,7 @@ func makeHTTPListener(
 	listenerName string,
 	route string,
 	serverKeyPair *ServerKeyPair,
-	clientValContext []*ClientCertValidationContext,
+	clientValContexts []*ClientCertValidationContext,
 ) *listener.Listener {
 	inspector := &tls_inspectorv3.TlsInspector{
 		EnableJa3Fingerprinting: wrapperspb.Bool(false),
@@ -251,7 +251,7 @@ func makeHTTPListener(
 				},
 			},
 		},
-		FilterChains: makeFilterChainArray(route, serverKeyPair, clientValContext),
+		FilterChains: makeFilterChainArray(route, serverKeyPair, clientValContexts),
 	}
 }
 
