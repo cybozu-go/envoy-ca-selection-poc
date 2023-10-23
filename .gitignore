@@ -1,2 +1,3 @@
 certs/**/*.pem
 certs/**/*.csr
+main
